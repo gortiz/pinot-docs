@@ -186,7 +186,7 @@ ORDER BY arrayToMv(RandomAirports) DESC
 
 `GROUP BY arrayToMv(col)` groups each row by every element of the MV column. The MSE calls this plan the MV aggregate. It gives the same groups as `GROUP BY col` in the SSE.
 
-By default, the MSE uses the MV aggregate only for queries that fail without it. See [Turn the MV aggregate on or off](#turn-the-mv-aggregate-on-or-off).
+The MSE uses the MV aggregate only for queries that fail without it. A query where the whole aggregate runs directly on a table scan keeps the plan of earlier releases. `EXPLAIN PLAN FOR` shows the plan that the query runs.
 
 The MV aggregate works in every stage of the query plan. For example, it works directly on a table scan, above a join, in a subquery, and with group trimming:
 
@@ -216,6 +216,17 @@ You can repeat the group key `arrayToMv(col)` in the SELECT list, in ORDER BY, a
 The argument of `arrayToMv` can also be an array expression, for example `arrayToMv(valueIn(RandomAirports, 'SFO', 'JFK'))`.
 
 `CROSS JOIN UNNEST` gives the same groups, with one difference: `UNNEST` drops a null MV value. The MV aggregate puts it in the null group.
+
+#### Null MV values
+
+A null MV value comes from a column with null handling or from an outer join. When the MSE does not use the MV aggregate, it treats `arrayToMv(col)` as never null, as in earlier releases:
+
+* `coalesce(arrayToMv(col), d)` becomes `arrayToMv(col)`. A null row does not get the value `d`.
+* `arrayToMv(col) IS NULL` is always false, and `arrayToMv(col) IS NOT NULL` is always true.
+
+`GROUP BY arrayToMv(col)` still puts a null MV value in the null group.
+
+When the MSE uses the MV aggregate, `arrayToMv(col)` can be null. So `CASE WHEN arrayToMv(col) IS NULL THEN 'none' ELSE arrayToMv(col) END` on the group key gives the group `none`. `coalesce` around `arrayToMv(col)`, in the group key or in a filter, is not supported there.
 
 #### Supported uses of arrayToMv
 
@@ -248,38 +259,8 @@ There are two exceptions:
 
 The physical optimizer (`usePhysicalOptimizer=true`) does not use the MV aggregate. With the physical optimizer, `GROUP BY arrayToMv(col)` works only directly on a table scan.
 
-#### Turn the MV aggregate on or off
-
-The setting `useMvAggregate` has three values:
-
-| Value | Behavior |
-| ----- | -------- |
-| `auto` (default) | The MSE plans the query without the MV aggregate first. If that plan fails because of `arrayToMv`, the MSE plans the query again with the MV aggregate. A query that worked in earlier releases keeps its earlier plan. |
-| `true` | The MSE always uses the MV aggregate for `GROUP BY arrayToMv(col)`, also directly on a table scan. |
-| `false` | The MSE never uses the MV aggregate, as in earlier releases. `GROUP BY arrayToMv(col)` then works only when the aggregate runs directly on a table scan. |
-
-Three settings control the MV aggregate. Each one overrides the settings that follow it:
-
-1. The query option `useMvAggregate` sets it for one query, for example `SET useMvAggregate='false';`.
-2. The cluster config `pinot.broker.multistage.use.mv.aggregate` sets it for all brokers of the cluster. A change applies to the next query, without a broker restart. When you delete the key, the broker config applies again.
-3. The broker config `pinot.broker.multistage.use.mv.aggregate` sets it for one broker. The default value is `auto`. A change needs a broker restart.
-
-For example, this request turns the MV aggregate off for the whole cluster:
-
-```bash
-curl -X POST '{controllerHost}/cluster/configs' \
-  -H 'Content-Type: application/json' \
-  -d '{"pinot.broker.multistage.use.mv.aggregate": "false"}'
-```
-
-To go back to the broker config, delete the key with `DELETE /cluster/configs/pinot.broker.multistage.use.mv.aggregate`.
-
-`EXPLAIN PLAN FOR` shows the plan that the query runs, also with `auto`.
-
 {% hint style="info" %}
-**Rolling upgrades.** Servers from earlier releases cannot run the MV aggregate. With `auto`, a broker sends the MV aggregate only for a query that fails without it. So during a rolling upgrade, every query that worked before the upgrade keeps its plan and its results. A query that uses the MV aggregate fails on an old server with `Unsupported PlanNode type`.
-
-Do not set `true` until all servers run a release with the MV aggregate. With `true`, a query that worked before the upgrade fails on an old server.
+**Rolling upgrades.** Servers from earlier releases cannot run the MV aggregate. A broker sends the MV aggregate only for a query that fails without it. So during a rolling upgrade, every query that worked before the upgrade keeps its plan and its results. A query that uses the MV aggregate fails on an old server with `Unsupported PlanNode type`.
 {% endhint %}
 
 ## Current limitations
